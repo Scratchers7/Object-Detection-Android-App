@@ -30,6 +30,7 @@ class Detector(
     private var tensorHeight = 0
     private var numChannel = 0
     private var numElements = 0
+    private var isAttributeFirst = true
 
     private val imageProcessor = ImageProcessor.Builder()
         .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
@@ -47,8 +48,16 @@ class Detector(
 
         tensorWidth = inputShape[1]
         tensorHeight = inputShape[2]
-        numChannel = outputShape[1]
-        numElements = outputShape[2]
+
+        if (outputShape[1] < outputShape[2]) {
+            numChannel = outputShape[1]
+            numElements = outputShape[2]
+            isAttributeFirst = true
+        } else {
+            numChannel = outputShape[2]
+            numElements = outputShape[1]
+            isAttributeFirst = false
+        }
 
         try {
             val inputStream: InputStream = context.assets.open(labelPath)
@@ -111,27 +120,64 @@ class Detector(
         for (c in 0 until numElements) {
             var maxConf = -1.0f
             var maxIdx = -1
-            var j = 4
-            var arrayIdx = c + numElements * j
-            while (j < numChannel){
-                if (array[arrayIdx] > maxConf) {
-                    maxConf = array[arrayIdx]
-                    maxIdx = j - 4
+
+            if (numChannel == 6) {
+                // YOLO26n / End-to-End Format: [x1, y1, x2, y2, score, class]
+                val baseIdx = c * numChannel
+                maxConf = array[baseIdx + 4]
+                maxIdx = array[baseIdx + 5].toInt()
+            } else {
+                // Standard YOLO Format: [x, y, w, h, (conf), class0, class1, ...]
+                val classStartIndex = if (numChannel > labels.size + 4) 5 else 4
+                var j = classStartIndex
+                var arrayIdx = if (isAttributeFirst) c + numElements * j else c * numChannel + j
+                while (j < numChannel) {
+                    if (array[arrayIdx] > maxConf) {
+                        maxConf = array[arrayIdx]
+                        maxIdx = j - classStartIndex
+                    }
+                    j++
+                    if (isAttributeFirst) arrayIdx += numElements else arrayIdx++
                 }
-                j++
-                arrayIdx += numElements
             }
 
-            if (maxConf > CONFIDENCE_THRESHOLD) {
+            if (maxConf > CONFIDENCE_THRESHOLD && maxIdx >= 0 && maxIdx < labels.size) {
                 val clsName = labels[maxIdx]
-                val cx = array[c] // 0
-                val cy = array[c + numElements] // 1
-                val w = array[c + numElements * 2]
-                val h = array[c + numElements * 3]
+                var cx: Float
+                var cy: Float
+                var w: Float
+                var h: Float
+
+                if (numChannel == 6) {
+                    val baseIdx = c * numChannel
+                    val x1 = array[baseIdx]
+                    val y1 = array[baseIdx + 1]
+                    val x2 = array[baseIdx + 2]
+                    val y2 = array[baseIdx + 3]
+                    w = x2 - x1
+                    h = y2 - y1
+                    cx = x1 + (w / 2)
+                    cy = y1 + (h / 2)
+                } else {
+                    cx = if (isAttributeFirst) array[c] else array[c * numChannel]
+                    cy = if (isAttributeFirst) array[c + numElements] else array[c * numChannel + 1]
+                    w = if (isAttributeFirst) array[c + numElements * 2] else array[c * numChannel + 2]
+                    h = if (isAttributeFirst) array[c + numElements * 3] else array[c * numChannel + 3]
+                }
+
+                // If coordinates are not normalized (e.g. 0-640), normalize them
+                if (cx > 1f || w > 1f) {
+                    cx /= tensorWidth
+                    cy /= tensorHeight
+                    w /= tensorWidth
+                    h /= tensorHeight
+                }
+
                 val x1 = cx - (w/2F)
                 val y1 = cy - (h/2F)
                 val x2 = cx + (w/2F)
                 val y2 = cy + (h/2F)
+
                 if (x1 < 0F || x1 > 1F) continue
                 if (y1 < 0F || y1 > 1F) continue
                 if (x2 < 0F || x2 > 1F) continue

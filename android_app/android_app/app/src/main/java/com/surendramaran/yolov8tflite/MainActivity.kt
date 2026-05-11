@@ -21,16 +21,19 @@ import com.surendramaran.yolov8tflite.Constants.MODEL_PATH
 import com.surendramaran.yolov8tflite.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import android.speech.tts.TextToSpeech
+import java.util.Locale
 
-class MainActivity : AppCompatActivity(), Detector.DetectorListener {
+class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeech.OnInitListener {
+    private lateinit var tts: TextToSpeech
     private lateinit var binding: ActivityMainBinding
     private val isFrontCamera = false
-
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var detector: Detector
+    private var lastSeenMap = mutableMapOf<String, Long>()
 
     private lateinit var cameraExecutor: ExecutorService
 
@@ -49,6 +52,13 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        tts = TextToSpeech(this, this)
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts.language = Locale.US
+        }
     }
 
     private fun startCamera() {
@@ -62,7 +72,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
     private fun bindCameraUseCases() {
         val cameraProvider = cameraProvider ?: throw IllegalStateException("Camera initialization failed.")
 
-        val rotation = binding.viewFinder.display.rotation
+        val rotation = binding.viewFinder.display?.rotation ?: android.view.Surface.ROTATION_0
 
         val cameraSelector = CameraSelector
             .Builder()
@@ -77,7 +87,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
         imageAnalyzer = ImageAnalysis.Builder()
             .setTargetAspectRatio(AspectRatio.RATIO_4_3)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setTargetRotation(binding.viewFinder.display.rotation)
+            .setTargetRotation(rotation)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()
 
@@ -139,6 +149,8 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        tts.stop()
+        tts.shutdown()
         detector.clear()
         cameraExecutor.shutdown()
     }
@@ -166,6 +178,57 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener {
 
     override fun onDetect(boundingBoxes: List<BoundingBox>, inferenceTime: Long) {
         runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            if (!::tts.isInitialized) return@runOnUiThread
+
+            val currentTime = System.currentTimeMillis()
+            val currentObjects = boundingBoxes.map { box ->
+                var position = ""
+                if (box.cy < 0.25) {
+                    position += "far"
+                }
+                else if (box.cy < 0.75){
+                    position += "ahead"
+                }
+                else{
+                    position += "close"
+                }
+                if (box.cx < 0.25) {
+                    position += " on the left"
+                }
+                else if (box.cx < 0.75){
+                    position += " in the middle"
+                }
+                else{
+                    position += " on the right"
+                }
+                "${box.clsName} $position"
+            }.toSet()
+
+            // 1. Remove objects from memory that haven't been seen for more than 2 seconds
+            // This allows them to be announced again only if they stay gone for a while.
+            val iterator = lastSeenMap.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (currentTime - entry.value > 2000L) {
+                    iterator.remove()
+                }
+            }
+
+            // 2. Identify "New" objects (current ones that aren't in our 2-second memory)
+            val newObjects = currentObjects.filter { it !in lastSeenMap }
+
+            // 3. Update memory with current objects and current time
+            currentObjects.forEach { lastSeenMap[it] = currentTime }
+
+            // 4. Speak only the truly new objects
+            if (newObjects.isNotEmpty()) {
+                val speechText = newObjects.joinToString(", ")
+                // Use QUEUE_FLUSH so it doesn't keep talking about things that left the screen
+                tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, null, null)
+            }
+
+            // 5. Update UI
             binding.inferenceTime.text = "${inferenceTime}ms"
             binding.overlay.apply {
                 setResults(boundingBoxes)
