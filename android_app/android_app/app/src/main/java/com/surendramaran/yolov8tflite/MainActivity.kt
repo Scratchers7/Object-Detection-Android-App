@@ -34,8 +34,15 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var detector: Detector
     private var lastSeenMap = mutableMapOf<String, Long>()
+    private var lastSpeakTime = 0L
 
     private lateinit var cameraExecutor: ExecutorService
+    private val excludedLabels = setOf("airplane",
+        "dog", "bicycle","sheep", "cow", "elephant"
+        , "bear", "zebra", "giraffe","kite","banana"
+        , "apple","sandwich","orange","broccoli"
+        ,"carrot","hot dog","pizza","donut","cake"
+        ,"teddy bear")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -182,7 +189,7 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
             if (!::tts.isInitialized) return@runOnUiThread
 
             val currentTime = System.currentTimeMillis()
-            val currentObjects = boundingBoxes.map { box ->
+            val currentObjects = boundingBoxes.filter{ it.clsName !in excludedLabels }.map { box ->
                 var position = ""
                 if (box.cy < 0.25) {
                     position += "far"
@@ -221,11 +228,13 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
             // 3. Update memory with current objects and current time
             currentObjects.forEach { lastSeenMap[it] = currentTime }
 
-            // 4. Speak only the truly new objects
+            // 4. Speak only the truly new objects with a 1.5s time gate to prevent cut-offs
             if (newObjects.isNotEmpty()) {
-                val speechText = newObjects.joinToString(", ")
-                // Use QUEUE_FLUSH so it doesn't keep talking about things that left the screen
-                tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, null, null)
+                if (currentTime - lastSpeakTime > 1500L) {
+                    val speechText = newObjects.joinToString(", ")
+                    tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, null, null)
+                    lastSpeakTime = currentTime
+                }
             }
 
             // 5. Update UI
