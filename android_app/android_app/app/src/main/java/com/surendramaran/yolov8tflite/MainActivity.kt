@@ -43,6 +43,14 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
         , "apple","sandwich","orange","broccoli"
         ,"carrot","hot dog","pizza","donut","cake"
         ,"teddy bear")
+    private val importantLabels = setOf("person",
+        "bicycle", "car", "motorcycle", "bus",
+        "train", "truck", "traffic light",
+        "fire hydrant", "stop sign", "parking meter"
+        , "bench", "cat", "dog", "skateboard",
+        "chair", "couch", "potted plant", "bed"
+        , "dining table", "oven", "sink", "refrigerator"
+        , "vase", "door", "wall")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -191,6 +199,8 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
             val currentTime = System.currentTimeMillis()
             val currentObjects = boundingBoxes.filter{ it.clsName !in excludedLabels }.map { box ->
                 var position = ""
+                val isClose = box.cy >= 0.75
+
                 if (box.cy < 0.25) {
                     position += "far"
                 }
@@ -209,11 +219,16 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
                 else{
                     position += " on the right"
                 }
-                "${box.clsName} $position"
+
+                val name = "${box.clsName} $position"
+                if (isClose && box.clsName in importantLabels) {
+                    "Careful! $name"
+                } else {
+                    name
+                }
             }.toSet()
 
-            // 1. Remove objects from memory that haven't been seen for more than 2 seconds
-            // This allows them to be announced again only if they stay gone for a while.
+            //Remove objects from memory that haven't been seen for more than 2 seconds
             val iterator = lastSeenMap.entries.iterator()
             while (iterator.hasNext()) {
                 val entry = iterator.next()
@@ -222,16 +237,27 @@ class MainActivity : AppCompatActivity(), Detector.DetectorListener, TextToSpeec
                 }
             }
 
-            // 2. Identify "New" objects (current ones that aren't in our 2-second memory)
+            //Identify New objects
             val newObjects = currentObjects.filter { it !in lastSeenMap }
 
-            // 3. Update memory with current objects and current time
+            //Update memory with current objects and current time
             currentObjects.forEach { lastSeenMap[it] = currentTime }
 
-            // 4. Speak only the truly new objects with a 1.5s time gate to prevent cut-offs
+            //Speak only the actually new objects
             if (newObjects.isNotEmpty()) {
-                if (currentTime - lastSpeakTime > 1500L) {
-                    val speechText = newObjects.joinToString(", ")
+                val alerts = newObjects.filter { it.startsWith("Careful") }
+                val normal = newObjects.filter { !it.startsWith("Careful") }
+
+                if (alerts.isNotEmpty()) {
+                    // Alert objects use QUEUE_ADD to ensure they are never skipped
+                    val alertText = alerts.joinToString(", ")
+                    tts.speak(alertText, TextToSpeech.QUEUE_ADD, null, null)
+                    lastSpeakTime = currentTime
+                }
+
+                if (normal.isNotEmpty() && currentTime - lastSpeakTime > 1500L) {
+                    // Normal objects use QUEUE_FLUSH to stay real-time
+                    val speechText = normal.joinToString(", ")
                     tts.speak(speechText, TextToSpeech.QUEUE_FLUSH, null, null)
                     lastSpeakTime = currentTime
                 }
